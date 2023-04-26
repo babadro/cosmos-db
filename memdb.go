@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/google/btree"
+	"github.com/tidwall/btree"
 )
 
 const (
@@ -25,11 +25,9 @@ type item struct {
 	value []byte
 }
 
-// Less implements btree.Item.
-func (i item) Less(other btree.Item) bool {
-	// this considers nil == []byte{}, but that's ok since we handle nil endpoints
-	// in iterators specially anyway
-	return bytes.Compare(i.key, other.(item).key) == -1
+// byKeys compares the items by key
+func byKeys(a, b item) bool {
+	return bytes.Compare(a.key, b.key) == -1
 }
 
 // newKey creates a new key item.
@@ -50,7 +48,7 @@ func newPair(key, value []byte) item {
 // important with MemDB.
 type MemDB struct {
 	mtx   sync.RWMutex
-	btree *btree.BTree
+	btree *btree.BTreeG[item]
 }
 
 var _ DB = (*MemDB)(nil)
@@ -58,7 +56,10 @@ var _ DB = (*MemDB)(nil)
 // NewMemDB creates a new in-memory database.
 func NewMemDB() *MemDB {
 	database := &MemDB{
-		btree: btree.New(bTreeDegree),
+		btree: btree.NewBTreeGOptions(byKeys, btree.Options{
+			Degree:  bTreeDegree,
+			NoLocks: true,
+		}),
 	}
 	return database
 }
@@ -71,10 +72,11 @@ func (db *MemDB) Get(key []byte) ([]byte, error) {
 	db.mtx.RLock()
 	defer db.mtx.RUnlock()
 
-	i := db.btree.Get(newKey(key))
-	if i != nil {
-		return i.(item).value, nil
+	i, ok := db.btree.Get(newKey(key))
+	if ok {
+		return i.value, nil
 	}
+
 	return nil, nil
 }
 
@@ -106,7 +108,7 @@ func (db *MemDB) Set(key []byte, value []byte) error {
 
 // set sets a value without locking the mutex.
 func (db *MemDB) set(key []byte, value []byte) {
-	db.btree.ReplaceOrInsert(newPair(key, value))
+	db.btree.Set(newPair(key, value))
 }
 
 // SetSync implements DB.
@@ -149,9 +151,8 @@ func (db *MemDB) Print() error {
 	db.mtx.RLock()
 	defer db.mtx.RUnlock()
 
-	db.btree.Ascend(func(i btree.Item) bool {
-		item := i.(item)
-		fmt.Printf("[%X]:\t[%X]\n", item.key, item.value)
+	db.btree.Ascend(item{}, func(i item) bool {
+		fmt.Printf("[%X]:\t[%X]\n", i.key, i.value)
 		return true
 	})
 	return nil
